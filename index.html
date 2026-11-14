@@ -145,6 +145,18 @@ dialog form { display: flex; flex-direction: column; gap: 14px }
 .actions .left { margin-right: auto }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 30; max-width: calc(100vw - 32px) }
 
+
+textarea { font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 10px; width: 100%; resize: vertical; margin-bottom: 8px }
+input[type="password"] { background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; min-width: 0; flex: 1 1 200px; max-width: 280px }
+.rv { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 10px 0; border-top: 1px solid var(--line) }
+.rv .d { width: 52px; color: var(--ink2); font-size: 13px; flex: none }
+.rv .mid { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere }
+.rv select { padding: 5px 6px; font-size: 13px }
+.rv .amt { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 500; margin-left: auto; white-space: nowrap }
+.rv.off { opacity: .55 }
+.tag { font-size: 12px; background: var(--out-soft); color: var(--warn); border-radius: 6px; padding: 1px 6px; white-space: nowrap }
+.maprow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0 }
+.maprow b { flex: 1 1 160px; min-width: 0 }
 @media (max-width: 760px) {
   .cols { grid-template-columns: minmax(0, 1fr) }
   .stats { grid-template-columns: repeat(2, 1fr) }
@@ -175,6 +187,7 @@ dialog form { display: flex; flex-direction: column; gap: 14px }
     <button role="tab" data-tab="overview">Overview</button>
     <button role="tab" data-tab="transactions">Transactions</button>
     <button role="tab" data-tab="accounts">Accounts</button>
+    <button role="tab" data-tab="import">Import</button>
     <button role="tab" data-tab="setup">Setup</button>
   </div>
 
@@ -227,7 +240,7 @@ dialog form { display: flex; flex-direction: column; gap: 14px }
   </form>
 </dialog>
 
-<input type="file" id="importFile" accept=".csv,.json,text/csv,application/json" hidden>
+<input type="file" id="importFile" accept=".csv,.json,.xls,.xlsx,.pdf" hidden>
 
 <script>
 (() => {
@@ -241,16 +254,17 @@ const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())
 const today = () => iso(new Date());
 const ymOf = s => s.slice(0, 7);
 const addMonth = (k, n) => { const [y, m] = k.split('-').map(Number); const d = new Date(y, m - 1 + n, 1); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
-const monthName = (k, o) => { const [y, m] = k.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString(undefined, o || { month: 'long', year: 'numeric' }); };
+const monthName = (k, o) => { const [y, m] = k.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString('en-IN', o || { month: 'long', year: 'numeric' }); };
 const r2 = n => Math.round(n * 100) / 100;
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
-function guessCurrency() {
-  const region = (navigator.language || '').split('-')[1] || '';
-  return ({ IN: 'INR', US: 'USD', GB: 'GBP', AE: 'AED', SG: 'SGD', AU: 'AUD', CA: 'CAD', JP: 'JPY', DE: 'EUR', FR: 'EUR', ES: 'EUR', IT: 'EUR', NL: 'EUR', IE: 'EUR' })[region] || 'USD';
+function normMeta(m) {
+  const first = !m.fmt, out = Object.assign(defaultMeta(), m);
+  if (first) { out.currency = 'INR'; out.fmt = 'in'; }
+  return out;
 }
 function defaultMeta() {
-  return { currency: guessCurrency(), started: false,
+  return { currency: 'INR', fmt: 'in', accMap: {}, started: false,
     accounts: [{ id: 'cash', name: 'Cash', opening: 0 }, { id: 'bank', name: 'Bank account', opening: 0 }],
     categories: { out: ['Groceries', 'Rent', 'Bills & utilities', 'Transport', 'Eating out', 'Shopping', 'Health', 'Entertainment', 'Other'],
                   in: ['Salary', 'Freelance', 'Interest', 'Gift', 'Other income'] },
@@ -285,7 +299,7 @@ function makeDemo() {
 }
 
 /* ---------- money ---------- */
-const loc = () => S.meta.currency === 'INR' ? 'en-IN' : undefined;
+const loc = () => 'en-IN';
 function money(n, compact) {
   const o = { style: 'currency', currency: S.meta.currency };
   if (compact) { o.notation = 'compact'; o.maximumFractionDigits = 1; }
@@ -373,7 +387,7 @@ function saveMeta() { metaTouched = true; persist([], true); }
 function loadLocal() {
   try {
     const d = JSON.parse(LS.get(KEY) || 'null');
-    if (d && d.meta && Array.isArray(d.tx)) { S.meta = Object.assign(defaultMeta(), d.meta); S.tx = d.tx; }
+    if (d && d.meta && Array.isArray(d.tx)) { S.meta = normMeta(d.meta); S.tx = d.tx; }
   } catch {}
   refreshDemo();
 }
@@ -397,7 +411,7 @@ async function initCloud() {
     if (meta || tx.length) {
       const touched = new Set(earlyOps.map(o => o.put ? ymOf(o.put.date) : null).filter(Boolean));
       for (const o of earlyOps) if (o.del) { const t = tx.find(x => x.id === o.del); if (t) touched.add(ymOf(t.date)); }
-      if (!metaTouched && meta) S.meta = Object.assign(defaultMeta(), meta);
+      if (!metaTouched && meta) S.meta = normMeta(meta);
       S.tx = tx; earlyOps.forEach(applyOp);
       refreshDemo(); persist([...touched], metaTouched || (!meta && S.meta.started));
     } else if (S.tx.length || S.meta.started) {
@@ -432,7 +446,7 @@ function txList(list, emptyMsg) {
       cur = t.date;
       const [y, m, d] = cur.split('-').map(Number);
       const dayNet = sorted.filter(x => x.date === cur).reduce((s, x) => s + (x.type === 'in' ? x.amount : x.type === 'out' ? -x.amount : 0), 0);
-      html += `<div class="day"><span>${new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: S.filter.all ? 'numeric' : undefined })}</span><span class="num">${dayNet > 0 ? '+' : dayNet < 0 ? '−' : ''}${money(Math.abs(r2(dayNet)))}</span></div>`;
+      html += `<div class="day"><span>${new Date(y, m - 1, d).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: S.filter.all ? 'numeric' : undefined })}</span><span class="num">${dayNet > 0 ? '+' : dayNet < 0 ? '−' : ''}${money(Math.abs(r2(dayNet)))}</span></div>`;
     }
     html += txRow(t);
   }
@@ -573,9 +587,9 @@ function viewSetup() {
       <form class="formrow" data-form="addCat" data-kind="in"><input type="text" id="s-newcat-in" maxlength="30" placeholder="New category"><button class="btn sm">Add</button></form></div>
     <div class="sec"><h3>Monthly budgets</h3><p>Set a limit for any spending category. The overview shows how much is left, and flags a category once you go over. Leave blank for no budget.</p>
       <div class="budgets">${S.meta.categories.out.map((c, i) => `<label>${esc(c)}<input type="text" inputmode="decimal" id="s-bud-${i}" data-bud="${esc(c)}" value="${S.meta.budgets[c] || ''}" placeholder="No limit"></label>`).join('')}</div></div>
-    <div class="sec"><h3>Your data</h3><p>Export a spreadsheet-ready CSV, or a full backup you can restore later. Importing a CSV adds its rows; restoring a backup replaces the whole book.</p>
+    <div class="sec"><h3>Your data</h3><p>Export a spreadsheet-ready CSV, or a full backup you can restore later. Restoring a backup replaces the whole book. To bring in bank alerts or statements, use the Import tab.</p>
       <div class="formrow"><button type="button" class="btn" data-act="exportCsv">Export CSV</button><button type="button" class="btn" data-act="exportJson">Download backup</button>
-      <button type="button" class="btn" data-act="import">Import CSV or backup</button><button type="button" class="btn danger" data-act="wipe" id="wipeBtn">Erase everything</button></div></div>
+      <button type="button" class="btn" data-act="import">Restore backup</button><button type="button" class="btn danger" data-act="wipe" id="wipeBtn">Erase everything</button></div></div>
   </section>`;
 }
 
@@ -583,7 +597,7 @@ function render() {
   $('#monthLabel').textContent = monthName(S.month);
   document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === S.tab)));
   $('#demoBanner').hidden = !S.demo;
-  $('#view').innerHTML = ({ overview: viewOverview, transactions: viewTransactions, accounts: viewAccounts, setup: viewSetup })[S.tab]();
+  $('#view').innerHTML = ({ overview: viewOverview, transactions: viewTransactions, accounts: viewAccounts, import: viewImport, setup: viewSetup })[S.tab]();
   if (S.tab === 'overview') drawFlow();
   if (S.tab === 'transactions') drawTxList();
 }
@@ -627,6 +641,7 @@ $('#txForm').addEventListener('submit', e => {
   if (!(amount > 0)) return fail('Enter an amount greater than zero.');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return fail('Pick a date.');
   const t = { id: editing ? editing.id : uid(), type: fType, amount, date, acc: $('#f-acc').value, note: $('#f-note').value.trim() };
+  if (editing && editing.ref) t.ref = editing.ref;
   if (fType === 'transfer') { t.to = $('#f-to').value; if (t.to === t.acc) return fail('Choose two different accounts.'); }
   else t.cat = $('#f-cat').value;
   putTx(t, editing);
@@ -690,7 +705,7 @@ function importText(name, text) {
     let d; try { d = JSON.parse(text); } catch { return toast('That backup file could not be read.'); }
     if (!d || !d.meta || !Array.isArray(d.tx)) return toast('That file is not a Cashbook backup.');
     const oldMonths = S.tx.map(t => ymOf(t.date));
-    S.meta = Object.assign(defaultMeta(), d.meta, { started: true });
+    S.meta = Object.assign(normMeta(d.meta), { started: true });
     S.tx = d.tx.filter(t => t && t.id && t.date && t.amount > 0); S.demo = false; demoTx = [];
     metaTouched = true; persist([...oldMonths, ...S.tx.map(t => ymOf(t.date))], true);
     render(); return toast(`Backup restored: ${S.tx.length} entries`);
@@ -717,8 +732,278 @@ function importText(name, text) {
 }
 $('#importFile').addEventListener('change', e => {
   const f = e.target.files[0]; if (!f) return;
-  const rd = new FileReader(); rd.onload = () => importText(f.name, String(rd.result)); rd.readAsText(f); e.target.value = '';
+  handleFile(f); e.target.value = '';
 });
+
+/* ---------- bringing entries in: Gmail alerts, pasted SMS, bank statements ---------- */
+const BANKS = [[/idfc/i, 'IDFC FIRST'], [/\bdbs\b|digibank/i, 'DBS'], [/yes\.?\s?bank/i, 'YES Bank'], [/hdfc/i, 'HDFC'], [/icici/i, 'ICICI'], [/\bsbi\b|state bank/i, 'SBI'],
+  [/axis/i, 'Axis'], [/kotak/i, 'Kotak'], [/indusind/i, 'IndusInd'], [/federal/i, 'Federal'], [/\bpnb\b|punjab national/i, 'PNB'], [/canara/i, 'Canara'],
+  [/bank of baroda|\bbob\b/i, 'BoB'], [/union bank/i, 'Union Bank'], [/indian bank/i, 'Indian Bank'], [/\biob\b|indian overseas/i, 'IOB'], [/\brbl\b/i, 'RBL'], [/paytm/i, 'Paytm']];
+const MON = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+const CAT_RULES = { out: [
+  [/swiggy|zomato|restaurant|cafe|food|pizza|domino|kfc|mcdonald|burger|bakery|hotel|delicious|biryani|tea\b/i, 'Eating out'],
+  [/bigbasket|blinkit|zepto|grofers|dmart|instamart|grocer|supermarket|kirana|provision|reliance fresh|more retail/i, 'Groceries'],
+  [/uber|\bola\b|rapido|irctc|petrol|fuel|hpcl|bpcl|iocl|indian oil|metro|fastag|redbus|makemytrip|indigo|railway/i, 'Transport'],
+  [/netflix|spotify|hotstar|prime video|bookmyshow|google ?play|youtube|steam|\bpvr\b|inox/i, 'Entertainment'],
+  [/amazon|flipkart|myntra|ajio|meesho|nykaa|shopping|decathlon|croma/i, 'Shopping'],
+  [/airtel|\bjio\b|vodafone|bsnl|electric|tneb|tangedco|bescom|recharge|broadband|fibernet|\bgas\b|water bill|billpay|bbps|bill\b/i, 'Bills & utilities'],
+  [/pharm|medic|apollo|hospital|clinic|1mg|netmeds|diagnos|\blab\b/i, 'Health'],
+  [/\brent\b|nobroker/i, 'Rent']],
+  in: [[/salary|payroll/i, 'Salary'], [/interest|int\.pd/i, 'Interest']] };
+function guessCat(text, type) {
+  if (type === 'transfer') return '';
+  for (const [re, c] of CAT_RULES[type]) if (re.test(text) && S.meta.categories[type].includes(c)) return c;
+  const fb = type === 'in' ? 'Other income' : 'Other';
+  return S.meta.categories[type].includes(fb) ? fb : S.meta.categories[type][0] || fb;
+}
+function mkDate(y, m, d) { y = +y; m = +m; d = +d; if (y < 100) y += 2000; if (!(m >= 1 && m <= 12 && d >= 1 && d <= 31 && y > 1990 && y < 2100)) return null; return `${y}-${pad(m)}-${pad(d)}`; }
+function parseDate(str) {       // Indian order: day first
+  const s = String(str); let m;
+  if ((m = /(\d{4})-(\d{2})-(\d{2})/.exec(s))) return mkDate(m[1], m[2], m[3]);
+  if ((m = /(\d{1,2})[\s\-\/.]{0,2}(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s\-\/.,']{0,3}(\d{4}|\d{2})\b/i.exec(s))) return mkDate(m[3], MON[m[2].toLowerCase()], m[1]);
+  if ((m = /\b(\d{1,2})[\-\/.](\d{1,2})[\-\/.](\d{4}|\d{2})\b/.exec(s))) return mkDate(m[3], m[2], m[1]);
+  return null;
+}
+function cellDate(v) {
+  if (typeof v === 'number' && v > 20000 && v < 80000) { const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 864e5); return mkDate(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }
+  return v == null ? null : parseDate(v);
+}
+const num = v => typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(/[^\d.\-]/g, '')) || 0;
+const tidy = s => String(s || '').replace(/\s+/g, ' ').trim().replace(/[.,;:\-\/]+$/, '').slice(0, 80);
+
+function parseAlert(text, fbDate, sender) {
+  const s = String(text).replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/\s+/g, ' ');
+  if (/\botp\b|one time password|will be (debited|deducted|charged)|is due|payment due|declined|failed|unsuccessful|not (been )?processed/i.test(s)) return null;
+  const kw = /(debited|spent|paid|withdrawn|purchase|transfer request|\bsent\b|deducted)|(credited|received|deposited|refund)/i.exec(s);
+  if (!kw) return null;
+  const type = kw[1] ? 'out' : 'in';
+  let amount = 0, m; const re = /(?:INR|Rs\.?|₹)\s*([\d,]+(?:\.\d{1,2})?)/gi;
+  while ((m = re.exec(s))) { if (/(avl|avail|bal|limit|outstanding|due)[^.!]{0,24}$/i.test(s.slice(Math.max(0, m.index - 28), m.index))) continue; amount = parseFloat(m[1].replace(/,/g, '')); break; }
+  if (!(amount > 0)) return null;
+  const W = "[A-Za-z0-9@._&'\\- ]{2,40}?", END = "(?=\\s+(?:on|ref|upi|via|using|from|to|avl|available)\\b|[.,;!]|$)";
+  let who = '';
+  if (type === 'out') {
+    m = /\bTo:\s*([^\s,;]+)/i.exec(s) || /\bat\s+(.+?)\s+on\s+\d/i.exec(s) || new RegExp('\\b(?:to|towards)\\s+(?:VPA\\s+)?(' + W + ')' + END, 'i').exec(s) || new RegExp('\\bat\\s+(' + W + ')' + END, 'i').exec(s);
+  } else m = /\bFrom:\s*([^\s,;]+)/i.exec(s) || new RegExp('\\b(?:from|by)\\s+(?:VPA\\s+)?(' + W + ')' + END, 'i').exec(s);
+  if (m && !/^(your|a\/c|ac\b|acct|account|the|my|card|bank)\b/i.test(m[1].trim())) who = tidy(m[1]);
+  m = /(?:a\/c|acct?|account|card)[\s.:]*(?:(?:no\.?|number|ending(?: in| with)?)[\s.:]*)?[xX*]+(\d{3,6})\b/i.exec(s);
+  const last4 = m ? m[1].slice(-4) : '';
+  const bank = (BANKS.find(b => b[0].test(sender || '')) || BANKS.find(b => b[0].test(s.replace(/\S+@\S+/g, ''))) || [])[1] || '';
+  m = /(?:UPI(?:\s*ref(?:erence)?)?(?:\s*no)?\.?[:\s\/#-]*|ref(?:erence)?(?:\s*no)?\.?[:\s#-]*|UTR[:\s]*|txn(?:\s*id)?[:\s#-]*)(\d{8,})/i.exec(s);
+  let date = parseDate(s);
+  if (!date || (fbDate && (date > fbDate || date < addMonth(ymOf(fbDate), -2)))) date = fbDate || date || today();
+  const note = who || (/transfer/i.test(s) ? 'Funds transfer' : type === 'in' ? 'Money received' : 'Card or account payment');
+  return { type, amount: r2(amount), date, note, hint: last4 ? `${bank || 'Account'} xx${last4}` : bank, ref: m ? m[1] : '', cat: guessCat(who + (/delicious/i.test(s) ? ' food' : ''), type) };
+}
+
+/* review before saving */
+let R = null, impMsg = '';
+function setImp(msg) { impMsg = msg || ''; const el = $('#impMsg'); if (el) { el.hidden = !impMsg; el.firstElementChild.textContent = impMsg; } }
+function startReview(cands, source) {
+  const seen = new Set();
+  const items = cands.filter(c => { if (!c.ref) return true; if (seen.has(c.ref)) return false; seen.add(c.ref); return true; });
+  for (const c of items) { c.dup = S.tx.some(t => (c.ref && t.ref === c.ref) || (t.date === c.date && t.amount === c.amount && t.type === c.type)); c.sel = !c.dup; c.hint = c.hint || ''; }
+  items.sort((a, b) => b.date.localeCompare(a.date));
+  if (!items.length) return setImp(`No transactions found in ${source}.`);
+  const map = {};
+  for (const h of new Set(items.map(c => c.hint))) { const id = S.meta.accMap && S.meta.accMap[h]; map[h] = id && S.meta.accounts.some(a => a.id === id) ? id : h ? '__new' : S.meta.accounts[0].id; }
+  R = { items, source, map }; impMsg = ''; S.tab = 'import'; render(); window.scrollTo(0, 0);
+}
+function viewReview() {
+  const n = R.items.filter(c => c.sel).length, dups = R.items.filter(c => c.dup).length;
+  const opt = (v, l, cur) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(l)}</option>`;
+  const maps = Object.keys(R.map).map(h => `<div class="maprow"><b>${esc(h || 'Entries with no card or account number')}</b><span class="muted small">goes into</span>
+    <select data-rv="map" data-i="0" data-hint="${esc(h)}" id="rv-map-${esc(h.replace(/[^A-Za-z0-9]/g, '_'))}" aria-label="Account for ${esc(h || 'other entries')}">${h ? opt('__new', `New account "${h}"`, R.map[h]) : ''}${S.meta.accounts.map(a => opt(a.id, a.name, R.map[h])).join('')}</select></div>`).join('');
+  const rowsHtml = R.items.map((c, i) => {
+    const [y, m, d] = c.date.split('-').map(Number), cats = S.meta.categories[c.type];
+    return `<div class="rv${c.sel ? '' : ' off'}"><input type="checkbox" id="rv-s-${i}" data-rv="sel" data-i="${i}"${c.sel ? ' checked' : ''} aria-label="Include this entry">
+      <span class="d">${new Date(y, m - 1, d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>
+      <span class="mid">${esc(c.note)} ${c.dup ? '<span class="tag">Already in your book?</span>' : ''}<div class="muted small">${esc(c.hint)}</div></span>
+      <select id="rv-t-${i}" data-rv="type" data-i="${i}" aria-label="Type">${opt('out', 'Money out', c.type)}${opt('in', 'Money in', c.type)}</select>
+      <select id="rv-c-${i}" data-rv="cat" data-i="${i}" aria-label="Category">${cats.map(x => opt(x, x, c.cat)).join('')}</select>
+      <span class="amt">${c.type === 'in' ? '+' : '−'}${money(c.amount)}</span></div>`;
+  }).join('');
+  return `<section class="panel"><header><h2>Check ${R.items.length} ${R.items.length === 1 ? 'entry' : 'entries'} from ${esc(R.source)}</h2>
+      <button type="button" class="linkbtn" data-act="rvAll">Tick or untick all</button></header>
+    <p class="muted small" style="margin:0 0 8px">Nothing is saved until you press Add. Fix the type or category where the guess is wrong.${dups ? ` ${dups} look like entries you already have, so they are unticked.` : ''}</p>
+    ${maps}${rowsHtml}
+    <div class="actions" style="margin-top:14px"><button type="button" class="btn" data-act="rvCancel">Discard</button>
+    <button type="button" class="btn primary" data-act="rvCommit"${n ? '' : ' disabled'}>Add ${n} ${n === 1 ? 'entry' : 'entries'}</button></div></section>`;
+}
+function commitReview() {
+  const picked = R.items.filter(c => c.sel); if (!picked.length) return;
+  leaveDemo(); S.meta.accMap = S.meta.accMap || {};
+  const accFor = {};
+  for (const h of new Set(picked.map(c => c.hint))) {
+    let id = R.map[h];
+    if (id === '__new') { id = uid(); S.meta.accounts.push({ id, name: h, opening: 0 }); }
+    accFor[h] = id; if (h) S.meta.accMap[h] = id;
+  }
+  const months = [];
+  for (const c of picked) {
+    const t = { id: uid(), type: c.type, amount: c.amount, date: c.date, acc: accFor[c.hint], cat: c.cat, note: c.note };
+    if (c.ref) t.ref = c.ref;
+    S.tx.push(t); if (cloud.state === 'pending') earlyOps.push({ put: t }); months.push(ymOf(c.date));
+  }
+  metaTouched = true; persist(months, true);
+  S.month = months.sort().pop(); R = null; S.tab = 'transactions'; S.filter = { q: '', type: '', cat: '', acc: '', all: true };
+  render(); toast(`Added ${picked.length} ${picked.length === 1 ? 'entry' : 'entries'}`);
+}
+function viewImport() {
+  if (R) return viewReview();
+  return `<div class="stack">
+    <div class="banner" id="impMsg"${impMsg ? '' : ' hidden'}><p>${esc(impMsg)}</p></div>
+    <section class="panel sec"><h3>From Gmail</h3><p>Finds the debit and credit alerts your banks and cards emailed you and turns each one into an entry for you to check. Claude asks your permission before this page reads Gmail.</p>
+      <div class="formrow"><select id="gm-days" aria-label="How far back"><option value="30">Last 30 days</option><option value="90" selected>Last 3 months</option><option value="180">Last 6 months</option><option value="365">Last 12 months</option></select>
+      <button type="button" class="btn primary" data-act="gmail">Find bank alerts</button></div></section>
+    <section class="panel sec"><h3>From SMS</h3><p>Copy the transaction messages from your phone and paste them here, one message per line or with a blank line between messages. OTPs, offers and due-date reminders are ignored.</p>
+      <textarea id="sms-text" rows="6" placeholder="INR 450.00 debited from A/c XX1234 on 12-Nov-26 to SWIGGY. UPI Ref 123456789012"></textarea>
+      <button type="button" class="btn primary" data-act="sms">Read messages</button></section>
+    <section class="panel sec"><h3>From a bank statement</h3><p>Upload the statement you download from net banking: Excel (.xls, .xlsx), CSV or PDF. The file is read on your device. Dates are read day first, the Indian way.</p>
+      <div class="formrow"><input type="password" id="pdf-pass" placeholder="PDF password, if it has one" autocomplete="off" aria-label="PDF password">
+      <button type="button" class="btn primary" data-act="import">Choose statement file</button></div></section>
+  </div>`;
+}
+
+function readSms() {
+  const raw = $('#sms-text').value.trim(); if (!raw) return setImp('Paste at least one message first.');
+  const parts = /\n\s*\n/.test(raw) ? raw.split(/\n\s*\n/) : raw.split('\n');
+  const out = []; for (const p of parts) { const c = parseAlert(p, null, ''); if (c) out.push(c); }
+  startReview(out, 'your messages');
+}
+
+const GMAIL_FIX = { needs_reauth: 'Gmail needs reconnecting. Open claude.ai Settings, then Connectors, reconnect Gmail and try again.',
+  server_not_connected: 'Gmail is not connected. Add it in claude.ai Settings, then Connectors, and try again.',
+  selection_required: 'You have more than one Gmail connector. Choose one when Claude asks, then try again.',
+  not_in_manifest: 'Gmail was not allowed for this page. Press the button again and choose Allow.',
+  approval_required: 'Gmail was not allowed for this page. Press the button again and choose Allow.',
+  consent_required: 'Gmail was not allowed for this page. Press the button again and choose Allow.',
+  blocked_by_policy: 'Your organisation does not allow this page to read Gmail. Paste alerts or upload a statement instead.',
+  server_unavailable: 'Gmail did not answer. Try again in a minute.' };
+let gmailBusy = false;
+async function fetchGmail(days) {
+  if (gmailBusy) return; gmailBusy = true;
+  try {
+    setImp('Looking through Gmail…');
+    const mcp = window.claude && window.claude.use ? await window.claude.use('mcp') : null;
+    if (!mcp) return setImp('Gmail can be read only when this page is open in Claude with Gmail connected. Paste alerts or upload a statement instead.');
+    const body = r => { const p = r && r.payload; if (typeof p === 'string') { try { return JSON.parse(p); } catch { return {}; } } return p || {}; };
+    const q = `newer_than:${days}d {debited credited "spent on" "transaction alert" "funds transfer" "UPI"} -category:promotions`;
+    let token = '', pages = 0; const msgs = [], multi = [];
+    do {
+      const input = { query: q, pageSize: 50, view: 'THREAD_VIEW_SUMMARY' }; if (token) input.pageToken = token;
+      const p = body(await mcp.callTool('Gmail', 'search_threads', input));
+      for (const th of p.threads || []) { if ((th.messageCount || 1) > 1) multi.push(th.id); else msgs.push(...(th.messages || [])); }
+      token = p.nextPageToken || ''; pages++;
+      setImp(`Looking through Gmail… ${msgs.length + multi.length} conversations so far`);
+    } while (token && pages < 8);
+    const capped = multi.length > 80; let missed = 0, i = 0;
+    for (const id of multi.slice(0, 80)) {
+      setImp(`Opening conversations with several alerts… ${++i} of ${Math.min(80, multi.length)}`);
+      try { msgs.push(...(body(await mcp.callTool('Gmail', 'get_thread', { threadId: id, messageFormat: 'MINIMAL' })).messages || [])); }
+      catch (e) { if (e && GMAIL_FIX[e.code] && e.code !== 'server_unavailable') throw e; missed++; }
+    }
+    const since = iso(new Date(Date.now() - days * 864e5)), out = [];
+    for (const m of msgs) {
+      const when = new Date(+m.internalDate || m.date); if (isNaN(when)) continue;
+      const d = iso(when); if (d < since) continue;
+      const c = parseAlert(m.snippet || '', d, `${m.sender || ''} ${m.subject || ''}`);
+      if (c) { c.ref = c.ref || 'gm:' + m.id; out.push(c); }
+    }
+    startReview(out, 'Gmail');
+    if (!R) setImp(`No bank alerts found in the last ${days} days of Gmail.`);
+    else if (capped || missed) toast(`${capped ? 'Very long conversations were cut off at 80. ' : ''}${missed ? missed + ' could not be opened.' : ''} Run it again to pick up the rest.`);
+  } catch (e) {
+    setImp((e && GMAIL_FIX[e.code]) || `Could not read Gmail${e && e.code ? ' (' + e.code + ')' : ''}. Try again, or paste alerts instead.`);
+  } finally { gmailBusy = false; }
+}
+
+/* statements */
+function loadScript(src) { return new Promise((ok, no) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => no(new Error('load')); document.head.appendChild(s); }); }
+function statementRows(rows, label) {
+  const low = r => (r || []).map(c => String(c ?? '').trim().toLowerCase());
+  let hi = -1;
+  for (let i = 0; i < Math.min(rows.length, 60); i++) { const h = low(rows[i]); if (h.some(c => /date/.test(c)) && h.some(c => /withdraw|debit|deposit|credit|amount|\bdr\b|\bcr\b/.test(c))) { hi = i; break; } }
+  if (hi < 0) return setImp('Could not find the transaction table in that file. It needs a Date column and Debit/Credit or Amount columns.');
+  const h = low(rows[hi]), find = (re, not) => h.findIndex((c, i) => re.test(c) && !(not && not.test(c)));
+  const cType = find(/dr\s*\/\s*cr|cr\s*\/\s*dr|^type$|txn type|transaction type/);
+  let cDate = find(/tran|txn/, /^(?!.*date)/); if (cDate < 0) cDate = find(/date/);
+  const cDesc = find(/narration|description|particular|remark|detail/);
+  const cDr = find(/withdraw|debit|\bdr\b/, /\/|type|card/), cCr = find(/deposit|credit|\bcr\b/, /\/|type|card/), cAmt = find(/amount|amt/, /withdraw|debit|deposit|credit|balance/);
+  const out = [];
+  for (const r of rows.slice(hi + 1)) {
+    const date = cellDate(r[cDate]); if (!date) continue;
+    let type, amount;
+    if (cDr >= 0 || cCr >= 0) { const d = Math.abs(num(r[cDr])), c = Math.abs(num(r[cCr])); if (d > 0) { type = 'out'; amount = d; } else if (c > 0) { type = 'in'; amount = c; } else continue; }
+    else if (cAmt >= 0) { const raw = String(r[cAmt] ?? ''), a = num(raw), mark = (cType >= 0 ? String(r[cType] ?? '') : '') + ' ' + raw; if (!a) continue;
+      type = /cr|credit|deposit/i.test(mark) ? 'in' : /dr|debit|withdraw/i.test(mark) ? 'out' : a < 0 ? 'out' : 'in'; amount = Math.abs(a); }
+    else continue;
+    const desc = tidy(cDesc >= 0 ? r[cDesc] : ''), ref = (/\b(\d{12})\b/.exec(desc) || [])[1] || '';
+    out.push({ type, amount: r2(amount), date, note: desc || 'Statement entry', hint: '', ref, cat: guessCat(desc, type) });
+  }
+  startReview(out, label);
+}
+async function pdfLines(buf, password) {
+  if (!window.pdfjsLib) { await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'); window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }
+  const doc = await window.pdfjsLib.getDocument({ data: buf, password: password || undefined }).promise, lines = [];
+  for (let p = 1; p <= doc.numPages; p++) {
+    const tc = await (await doc.getPage(p)).getTextContent(), byY = new Map();
+    for (const it of tc.items) { if (!it.str || !it.str.trim()) continue; const y = Math.round(it.transform[5] / 3); if (!byY.has(y)) byY.set(y, []); byY.get(y).push(it); }
+    for (const y of [...byY.keys()].sort((a, b) => b - a)) lines.push(byY.get(y).sort((a, b) => a.transform[4] - b.transform[4]).map(i => i.str.trim()).join(' '));
+  }
+  return lines;
+}
+function statementLines(lines, label) {
+  const recs = [];
+  for (const ln of lines) {
+    const date = parseDate(ln.slice(0, 14));
+    if (!date) { const last = recs[recs.length - 1]; if (last && last.desc.length < 70 && !/balance|total|page \d|statement/i.test(ln) && !/[\d,]+\.\d{2}/.test(ln)) last.desc += ' ' + ln; continue; }
+    if (/opening balance|closing balance|brought forward|carried forward/i.test(ln)) continue;
+    const nums = [...ln.matchAll(/-?[\d,]*\d\.\d{2}\b/g)]; if (!nums.length) continue;
+    const vals = nums.map(m => Math.abs(parseFloat(m[0].replace(/,/g, ''))));
+    const two = vals.length >= 2;
+    let desc = ln.slice(0, nums[two ? nums.length - 2 : nums.length - 1].index).replace(/^\s*\S+(\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{2,4})?/i, '');
+    desc = desc.replace(/^\s*\d{1,2}[\-\/.]\d{1,2}[\-\/.]\d{2,4}/, '');
+    recs.push({ date, desc, amount: two ? vals[vals.length - 2] : vals[0], bal: two ? vals[vals.length - 1] : null, cr: /\bcr\b|credit|deposit|refund|salary|interest/i.test(ln) });
+  }
+  const near = (a, b) => Math.abs(a - b) < 0.011; let up = 0, down = 0;
+  for (let i = 1; i < recs.length; i++) { const a = recs[i - 1], b = recs[i]; if (a.bal == null || b.bal == null) continue; if (near(Math.abs(b.bal - a.bal), b.amount)) up++; if (near(Math.abs(a.bal - b.bal), a.amount)) down++; }
+  const asc = up >= down, out = [];
+  recs.forEach((r, i) => {
+    const prev = recs[asc ? i - 1 : i + 1]; let type = r.cr ? 'in' : 'out';
+    if (prev && prev.bal != null && r.bal != null && near(Math.abs(r.bal - prev.bal), r.amount)) type = r.bal > prev.bal ? 'in' : 'out';
+    if (!(r.amount > 0)) return;
+    const desc = tidy(r.desc);
+    out.push({ type, amount: r2(r.amount), date: r.date, note: desc || 'Statement entry', hint: '', ref: (/\b(\d{12})\b/.exec(desc) || [])[1] || '', cat: guessCat(desc, type) });
+  });
+  startReview(out, label);
+}
+async function handleFile(f) {
+  const name = f.name, ext = (name.split('.').pop() || '').toLowerCase(), label = 'your statement';
+  try {
+    if (ext === 'pdf') {
+      setImp('Reading the PDF…'); S.tab = 'import';
+      const pass = $('#pdf-pass') ? $('#pdf-pass').value : '';
+      let lines;
+      try { lines = await pdfLines(await f.arrayBuffer(), pass); }
+      catch (e) { return setImp(e && e.name === 'PasswordException' ? (pass ? 'That PDF password did not work. Check it and upload again.' : 'This PDF is locked. Type its password in the box, then choose the file again.') : 'Could not read that PDF. Try the Excel or CSV statement from net banking instead.'); }
+      return statementLines(lines, label);
+    }
+    if (ext === 'xls' || ext === 'xlsx') {
+      setImp('Reading the spreadsheet…');
+      if (!window.XLSX) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+      const wb = window.XLSX.read(await f.arrayBuffer(), { type: 'array' });
+      let best = [];
+      for (const n of wb.SheetNames) { const rws = window.XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' }); if (rws.length > best.length) best = rws; }
+      return statementRows(best, label);
+    }
+    const text = await f.text();
+    if (ext === 'json' || text.trim().startsWith('{')) return importText(name, text);
+    const rws = parseCsv(text), head = (rws[0] || []).map(x => String(x).trim().toLowerCase());
+    if (head.includes('to_account') || (head.includes('type') && head.includes('category') && head.includes('account'))) return importText(name, text);
+    statementRows(rws, label);
+  } catch { setImp('Could not read that file. Try the Excel or CSV statement from net banking.'); }
+}
 
 /* ---------- events ---------- */
 document.addEventListener('click', e => {
@@ -747,6 +1032,11 @@ document.addEventListener('click', e => {
   else if (act === 'exportCsv') download(`cashbook-${today()}.csv`, toCsv());
   else if (act === 'exportJson') download(`cashbook-backup-${today()}.json`, JSON.stringify({ meta: S.meta, tx: S.tx }, null, 1));
   else if (act === 'import') $('#importFile').click();
+  else if (act === 'gmail') fetchGmail(+$('#gm-days').value);
+  else if (act === 'sms') readSms();
+  else if (act === 'rvCancel') { R = null; render(); }
+  else if (act === 'rvAll') { const on = R.items.some(c => !c.sel); R.items.forEach(c => c.sel = on); render(); }
+  else if (act === 'rvCommit') commitReview();
   else if (act === 'wipe') {
     b.dataset.label = 'Erase everything';
     if (armed(b, 'Tap again to erase all entries')) {
@@ -772,6 +1062,12 @@ document.addEventListener('change', e => {
   if (id === 'fl-type') S.filter.type = el.value; else if (id === 'fl-cat') S.filter.cat = el.value;
   else if (id === 'fl-acc') S.filter.acc = el.value; else if (id === 'fl-all') S.filter.all = el.checked;
   if (id.startsWith('fl-')) return drawTxList();
+  if (R && el.dataset.rv) {
+    const c = R.items[+el.dataset.i], k = el.dataset.rv;
+    if (k === 'sel') c.sel = el.checked; else if (k === 'type') { c.type = el.value; c.cat = guessCat(c.note, c.type); } else if (k === 'cat') c.cat = el.value;
+    else if (k === 'map') R.map[el.dataset.hint] = el.value;
+    return render();
+  }
   if (id === 's-currency') { S.meta.currency = el.value; saveMeta(); render(); }
   else if (el.dataset.bud) {
     const v = el.value.trim() ? parseAmount(el.value) : 0;
@@ -786,7 +1082,7 @@ new ResizeObserver(() => { const el = $('#flow'); if (el && Math.abs(el.clientWi
 
 /* ---------- start ---------- */
 loadLocal();
-const savedTab = LS.get('cashbook.tab'); if (['overview', 'transactions', 'accounts', 'setup'].includes(savedTab)) S.tab = savedTab;
+const savedTab = LS.get('cashbook.tab'); if (['overview', 'transactions', 'accounts', 'import', 'setup'].includes(savedTab)) S.tab = savedTab;
 render();
 initCloud();
 })();

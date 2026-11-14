@@ -5,6 +5,8 @@ A personal tracker for every transaction and your monthly cash flow.
 - Record money in, money out and transfers between accounts
 - Monthly overview: income, spending, net cash flow, closing balance
 - Six-month cash flow chart and spending by category, with optional budgets
+- Amounts and dates in Indian format (₹, lakh grouping, day first)
+- Import from Gmail bank alerts, pasted SMS, or a bank statement (Excel, CSV, PDF), with a review step
 - Search and filter all entries; export CSV, back up and restore
 
 It is a single file, `index.html`, with no build step. Open it in a browser and
