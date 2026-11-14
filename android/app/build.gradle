@@ -1,0 +1,23 @@
+plugins { id 'com.android.application' }
+
+// The app is the web cashbook (../../index.html) inside a WebView, plus a bridge that reads SMS.
+def webAssets = layout.buildDirectory.dir('webAssets')
+tasks.register('copyWeb', Copy) { from '../../index.html'; into webAssets }
+
+android {
+    namespace 'app.cashbook'
+    compileSdk 34
+    defaultConfig { applicationId 'app.cashbook'; minSdk 26; targetSdk 34; versionCode 1; versionName '1.0' }
+    signingConfigs {
+        // Fixed personal key so every build can update the installed app without losing its data.
+        personal { storeFile file('../cashbook.keystore'); storePassword 'cashbook'; keyAlias 'cashbook'; keyPassword 'cashbook' }
+    }
+    buildTypes {
+        debug { signingConfig signingConfigs.personal }
+        release { signingConfig signingConfigs.personal; minifyEnabled false }
+    }
+    sourceSets { main { assets.srcDir(webAssets) } }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    lint { checkReleaseBuilds false }
+}
+preBuild.dependsOn copyWeb

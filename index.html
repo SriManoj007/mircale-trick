@@ -422,7 +422,7 @@ async function initCloud() {
     render();
   } catch {
     cloud.state = 'off'; earlyOps = [];
-    setSync('local', 'Saved on this device only. Export a backup now and then.');
+    setSync('local', NATIVE ? 'Saved on this phone. Download a backup from Setup now and then.' : 'Saved on this device only. Export a backup now and then.');
   }
 }
 
@@ -688,6 +688,7 @@ function parseCsv(text) {
   return out;
 }
 async function download(filename, data) {
+  if (NATIVE) { const where = NATIVE.saveFile(filename, data); return toast(where ? `Saved ${filename} to ${where}` : 'Could not save the file.'); }
   try {
     const dl = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
     if (dl) { await dl.save({ filename, data }); return toast('Saved ' + filename); }
@@ -736,9 +737,9 @@ $('#importFile').addEventListener('change', e => {
 });
 
 /* ---------- bringing entries in: Gmail alerts, pasted SMS, bank statements ---------- */
-const BANKS = [[/idfc/i, 'IDFC FIRST'], [/\bdbs\b|digibank/i, 'DBS'], [/yes\.?\s?bank/i, 'YES Bank'], [/hdfc/i, 'HDFC'], [/icici/i, 'ICICI'], [/\bsbi\b|state bank/i, 'SBI'],
-  [/axis/i, 'Axis'], [/kotak/i, 'Kotak'], [/indusind/i, 'IndusInd'], [/federal/i, 'Federal'], [/\bpnb\b|punjab national/i, 'PNB'], [/canara/i, 'Canara'],
-  [/bank of baroda|\bbob\b/i, 'BoB'], [/union bank/i, 'Union Bank'], [/indian bank/i, 'Indian Bank'], [/\biob\b|indian overseas/i, 'IOB'], [/\brbl\b/i, 'RBL'], [/paytm/i, 'Paytm']];
+const BANKS = [[/idfc/i, 'IDFC FIRST'], [/\bdbs\b|digibank/i, 'DBS'], [/yes\.?\s?b(a)?nk/i, 'YES Bank'], [/hdfc/i, 'HDFC'], [/icici/i, 'ICICI'], [/sbi(inb|upi|psg|bnk)|\bsbi\b|state bank/i, 'SBI'],
+  [/axis/i, 'Axis'], [/kotak/i, 'Kotak'], [/indusind|indusb/i, 'IndusInd'], [/federal|fedbnk/i, 'Federal'], [/\bpnb|punjab national/i, 'PNB'], [/canara|canbnk/i, 'Canara'],
+  [/bank of baroda|\bbob\b|bobtxn|bobsms/i, 'BoB'], [/union bank/i, 'Union Bank'], [/indian bank/i, 'Indian Bank'], [/\biob\b|indian overseas/i, 'IOB'], [/\brbl\b/i, 'RBL'], [/paytm/i, 'Paytm']];
 const MON = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
 const CAT_RULES = { out: [
   [/swiggy|zomato|restaurant|cafe|food|pizza|domino|kfc|mcdonald|burger|bakery|hotel|delicious|biryani|tea\b/i, 'Eating out'],
@@ -853,12 +854,13 @@ function viewImport() {
   if (R) return viewReview();
   return `<div class="stack">
     <div class="banner" id="impMsg"${impMsg ? '' : ' hidden'}><p>${esc(impMsg)}</p></div>
-    <section class="panel sec"><h3>From Gmail</h3><p>Finds the debit and credit alerts your banks and cards emailed you and turns each one into an entry for you to check. Claude asks your permission before this page reads Gmail.</p>
+    ${NATIVE ? smsCard() : `    <section class="panel sec"><h3>From Gmail</h3><p>Finds the debit and credit alerts your banks and cards emailed you and turns each one into an entry for you to check. Claude asks your permission before this page reads Gmail.</p>
       <div class="formrow"><select id="gm-days" aria-label="How far back"><option value="30">Last 30 days</option><option value="90" selected>Last 3 months</option><option value="180">Last 6 months</option><option value="365">Last 12 months</option></select>
       <button type="button" class="btn primary" data-act="gmail">Find bank alerts</button></div></section>
     <section class="panel sec"><h3>From SMS</h3><p>Copy the transaction messages from your phone and paste them here, one message per line or with a blank line between messages. OTPs, offers and due-date reminders are ignored.</p>
       <textarea id="sms-text" rows="6" placeholder="INR 450.00 debited from A/c XX1234 on 12-Nov-26 to SWIGGY. UPI Ref 123456789012"></textarea>
       <button type="button" class="btn primary" data-act="sms">Read messages</button></section>
+`}
     <section class="panel sec"><h3>From a bank statement</h3><p>Upload the statement you download from net banking: Excel (.xls, .xlsx), CSV or PDF. The file is read on your device. Dates are read day first, the Indian way.</p>
       <div class="formrow"><input type="password" id="pdf-pass" placeholder="PDF password, if it has one" autocomplete="off" aria-label="PDF password">
       <button type="button" class="btn primary" data-act="import">Choose statement file</button></div></section>
@@ -1005,6 +1007,57 @@ async function handleFile(f) {
   } catch { setImp('Could not read that file. Try the Excel or CSV statement from net banking.'); }
 }
 
+/* ---------- phone app: read bank SMS automatically ---------- */
+const NATIVE = window.CashbookNative || null;
+const SMS_AT = 'cashbook.smsAt', SMS_ASKED = 'cashbook.smsAsked';
+function smsAccount(hint) {
+  S.meta.accMap = S.meta.accMap || {};
+  const key = hint || 'Bank (from SMS)';
+  let id = S.meta.accMap[key];
+  if (!id || !S.meta.accounts.some(a => a.id === id)) {
+    const same = S.meta.accounts.find(a => a.name === key);
+    id = same ? same.id : uid();
+    if (!same) S.meta.accounts.push({ id, name: key, opening: 0 });
+    S.meta.accMap[key] = id;
+  }
+  return id;
+}
+function syncSms(since, quiet) {
+  if (!NATIVE || !NATIVE.hasSmsPermission()) return;
+  const from = since != null ? since : +(LS.get(SMS_AT) || 0) || Date.now() - 90 * 864e5;
+  let msgs = []; try { msgs = JSON.parse(NATIVE.readSms(from)); } catch {}
+  let added = 0, latest = +(LS.get(SMS_AT) || 0); const months = [];
+  for (const m of msgs) {
+    latest = Math.max(latest, m.d);
+    if (!/[A-Za-z]/.test(m.a || '')) continue;             // banks send from named IDs, not phone numbers
+    const c = parseAlert(m.b || '', iso(new Date(m.d)), m.a);
+    if (!c) continue;
+    const ref = c.ref || 'sms:' + m.d;
+    if (S.tx.some(t => t.ref === ref || t.ref === 'sms:' + m.d || (t.date === c.date && t.amount === c.amount && t.type === c.type && t.src !== 'sms'))) continue;
+    leaveDemo();
+    S.tx.push({ id: uid(), type: c.type, amount: c.amount, date: c.date, acc: smsAccount(c.hint), cat: c.cat, note: c.note, ref, src: 'sms' });
+    months.push(ymOf(c.date)); added++;
+  }
+  LS.set(SMS_AT, String(latest || Date.now()));
+  LS.set('cashbook.smsInfo', JSON.stringify({ at: Date.now(), added }));
+  if (added) { metaTouched = true; persist(months, true); S.month = months.sort().pop(); render(); toast(`${added} new ${added === 1 ? 'transaction' : 'transactions'} from SMS`); }
+  else if (!quiet) { render(); toast('No new bank messages'); }
+  else if (S.tab === 'import' && !R) render();
+}
+function smsCard() {
+  const ok = NATIVE.hasSmsPermission(); let info = null; try { info = JSON.parse(LS.get('cashbook.smsInfo') || 'null'); } catch {}
+  const when = info ? new Date(info.at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '';
+  return `<section class="panel sec"><h3>From SMS, automatically</h3>
+    <p>${ok ? `Bank and card messages are read each time you open the app, and every debit or credit becomes a transaction. ${info ? `Last checked ${esc(when)}.` : ''}` : 'Allow SMS access and the app turns every bank debit or credit message into a transaction by itself. Messages are read on this phone and are not sent anywhere.'}</p>
+    <div class="formrow">${ok ? `<button type="button" class="btn primary" data-act="smsNow">Check now</button>
+      <select id="sms-back" aria-label="How far back"><option value="90">Last 3 months</option><option value="180">Last 6 months</option><option value="365">Last 12 months</option><option value="1095">Last 3 years</option></select>
+      <button type="button" class="btn" data-act="smsRescan">Read older messages</button>` : `<button type="button" class="btn primary" data-act="smsAllow">Allow SMS access</button>`}</div></section>`;
+}
+if (NATIVE) {
+  window.nativeResume = () => syncSms(null, true);
+  window.onSmsPermission = ok => { if (ok) syncSms(null, false); else { toast('SMS access was not allowed. You can allow it from the Import tab.'); render(); } };
+}
+
 /* ---------- events ---------- */
 document.addEventListener('click', e => {
   const seg = e.target.closest('#f-type button'); if (seg) return setType(seg.dataset.type, null);
@@ -1034,6 +1087,9 @@ document.addEventListener('click', e => {
   else if (act === 'import') $('#importFile').click();
   else if (act === 'gmail') fetchGmail(+$('#gm-days').value);
   else if (act === 'sms') readSms();
+  else if (act === 'smsAllow') { LS.set(SMS_ASKED, '1'); NATIVE.requestSmsPermission(); }
+  else if (act === 'smsNow') syncSms(null, false);
+  else if (act === 'smsRescan') syncSms(Date.now() - (+$('#sms-back').value) * 864e5, false);
   else if (act === 'rvCancel') { R = null; render(); }
   else if (act === 'rvAll') { const on = R.items.some(c => !c.sel); R.items.forEach(c => c.sel = on); render(); }
   else if (act === 'rvCommit') commitReview();
@@ -1085,5 +1141,9 @@ loadLocal();
 const savedTab = LS.get('cashbook.tab'); if (['overview', 'transactions', 'accounts', 'import', 'setup'].includes(savedTab)) S.tab = savedTab;
 render();
 initCloud();
+if (NATIVE) {
+  if (NATIVE.hasSmsPermission()) syncSms(null, true);
+  else if (!LS.get(SMS_ASKED)) { LS.set(SMS_ASKED, '1'); NATIVE.requestSmsPermission(); }
+}
 })();
 </script>
