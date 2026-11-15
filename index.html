@@ -157,6 +157,15 @@ input[type="password"] { background: var(--surface); border: 1px solid var(--lin
 .tag { font-size: 12px; background: var(--out-soft); color: var(--warn); border-radius: 6px; padding: 1px 6px; white-space: nowrap }
 .maprow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0 }
 .maprow b { flex: 1 1 160px; min-width: 0 }
+
+.aipanel { display: flex; flex-direction: column; gap: 10px }
+.chat { display: flex; flex-direction: column; gap: 12px; max-height: 58vh; min-height: 180px; overflow-y: auto; padding-right: 2px }
+.msg { max-width: 88%; min-width: 0 }
+.msg .who { font-size: 12px; color: var(--muted); margin-bottom: 2px }
+.msg .txt { white-space: pre-wrap; overflow-wrap: anywhere; padding: 9px 12px; border-radius: 12px; background: var(--sunk) }
+.msg.you { align-self: flex-end } .msg.you .who { text-align: right } .msg.you .txt { background: var(--accent-soft) }
+.ideas { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center }
+.askrow input { flex: 1 1 200px; padding: 11px 12px } .askrow input[type="password"] { max-width: none }
 @media (max-width: 760px) {
   .cols { grid-template-columns: minmax(0, 1fr) }
   .stats { grid-template-columns: repeat(2, 1fr) }
@@ -188,6 +197,7 @@ input[type="password"] { background: var(--surface); border: 1px solid var(--lin
     <button role="tab" data-tab="transactions">Transactions</button>
     <button role="tab" data-tab="accounts">Accounts</button>
     <button role="tab" data-tab="import">Import</button>
+    <button role="tab" data-tab="assistant">Ask Claude</button>
     <button role="tab" data-tab="setup">Setup</button>
   </div>
 
@@ -596,8 +606,9 @@ function viewSetup() {
 function render() {
   $('#monthLabel').textContent = monthName(S.month);
   document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === S.tab)));
-  $('#demoBanner').hidden = !S.demo;
-  $('#view').innerHTML = ({ overview: viewOverview, transactions: viewTransactions, accounts: viewAccounts, import: viewImport, setup: viewSetup })[S.tab]();
+  $('#demoBanner').hidden = !S.demo || S.tab === 'assistant';
+  $('#addBtn').hidden = S.tab === 'assistant';
+  $('#view').innerHTML = ({ overview: viewOverview, transactions: viewTransactions, accounts: viewAccounts, import: viewImport, assistant: viewAssistant, setup: viewSetup })[S.tab]();
   if (S.tab === 'overview') drawFlow();
   if (S.tab === 'transactions') drawTxList();
 }
@@ -1058,6 +1069,177 @@ if (NATIVE) {
   window.onSmsPermission = ok => { if (ok) syncSms(null, false); else { toast('SMS access was not allowed. You can allow it from the Import tab.'); render(); } };
 }
 
+/* ---------- Ask Claude: questions, changes and help, from inside the book ---------- */
+const AI_KEY = 'cashbook.claudeKey';
+const AI = { sample: null, ready: false, busy: false, chat: [], apiMsgs: [], pendingDelete: null, ctl: null, err: '' };
+const AI_RULES = `You are the assistant built into My Cashbook, a personal money tracker used by one person in India. They will ask about their own money, ask you to change their book, or ask how the app works.
+
+Answer from the book snapshot in the latest message and from the tools. The snapshot has totals only, so call find_transactions whenever a question depends on individual entries. If the book cannot answer something, say so instead of estimating.
+
+Write amounts the Indian way, for example ₹1,25,000. The chat shows plain text, so write short plain sentences and simple lines, with no markdown headings, tables or bold. Lead with the answer.
+
+When you change the book, do it with the tools and then say exactly what you changed. Deleting never happens straight away: delete_transactions only proposes the deletion and the person confirms it with a button under the chat, so tell them to press Confirm. Ask before making a change you are unsure they want.
+
+How the app works, for support questions:
+- Tabs: Overview (month totals, six month cash flow chart, spending by category), Transactions (search and filter, tap an entry to edit or delete), Accounts (balances, add account, move money between accounts), Import, Ask Claude, Setup (currency, categories, monthly budgets, export CSV, download or restore a backup, erase everything).
+- The month arrows at the top change which month every tab shows.
+- Android app: it reads bank and card SMS each time it opens and adds debits and credits by itself. If SMS access is blocked, open the phone's App info for My Cashbook, tap the three dot menu, choose Allow restricted settings, then Permissions, SMS, Allow. Import has Check now and Read older messages.
+- Web version: Import can read bank alert emails from Gmail, pasted SMS text, or a statement file (Excel, CSV, PDF) and shows a review list before saving.
+- A transfer between the person's own accounts should be one Transfer entry, not a money out plus a money in.
+- The phone app keeps data on the phone only. Download a backup from Setup regularly; uninstalling the app erases its data.`;
+
+function aiSnapshot() {
+  const now = ymOf(today()), lines = [`Today is ${today()}. Currency ${S.meta.currency}. Month on screen: ${S.month}.`];
+  if (S.demo) lines.push('The book is empty. The app is showing example entries, which are not the person\'s data.');
+  lines.push('Accounts and balances: ' + S.meta.accounts.map(a => `${a.name} ${S.demo ? 0 : balance(a.id)}`).join('; '));
+  lines.push('Spending categories: ' + S.meta.categories.out.join(', '));
+  lines.push('Income categories: ' + S.meta.categories.in.join(', '));
+  const b = Object.entries(S.meta.budgets || {}); if (b.length) lines.push('Monthly budgets: ' + b.map(([c, v]) => `${c} ${v}`).join('; '));
+  if (!S.demo) {
+    lines.push('Month totals (in / out / net):');
+    for (let i = 11; i >= 0; i--) { const k = addMonth(now, -i), t = monthTotals(k); if (t.in || t.out) lines.push(`${k}: ${t.in} / ${t.out} / ${t.net}`); }
+    for (const k of [...new Set([S.month, now])]) {
+      const by = {}; for (const t of S.tx) if (t.type === 'out' && ymOf(t.date) === k) by[t.cat || 'Uncategorised'] = r2((by[t.cat || 'Uncategorised'] || 0) + t.amount);
+      const e = Object.entries(by).sort((x, y) => y[1] - x[1]); if (e.length) lines.push(`Spending by category in ${k}: ` + e.map(([c, v]) => `${c} ${v}`).join('; '));
+    }
+    lines.push(`Entries in the book: ${S.tx.length}.`);
+  }
+  return lines.join('\n');
+}
+function aiAccount(name, fallback) {
+  const n = String(name || '').trim().toLowerCase(); if (!n) return fallback;
+  const a = S.meta.accounts.find(x => x.name.toLowerCase() === n) || S.meta.accounts.find(x => x.name.toLowerCase().includes(n));
+  if (!a) throw new Error(`No account called "${name}". Accounts: ${S.meta.accounts.map(x => x.name).join(', ')}`);
+  return a.id;
+}
+const aiRow = t => ({ id: t.id, date: t.date, type: t.type === 'in' ? 'income' : t.type === 'out' ? 'expense' : 'transfer', amount: t.amount, category: t.cat || '', account: accName(t.acc), to_account: t.to ? accName(t.to) : '', note: t.note || '' });
+const aiType = v => { const s = String(v || '').toLowerCase(); return s.startsWith('i') ? 'in' : s.startsWith('t') ? 'transfer' : 'out'; };
+const AI_TOOLS = [
+  { name: 'find_transactions', description: 'Search the entries in the book. Returns matching entries (newest first, with their ids) plus the count and the income and expense totals of everything that matched. Use it before answering about individual entries, and to get ids for update or delete.',
+    schema: { type: 'object', properties: { query: { type: 'string', description: 'Words to look for in the note, category or account' }, from: { type: 'string', description: 'First date, YYYY-MM-DD' }, to: { type: 'string', description: 'Last date, YYYY-MM-DD' },
+      type: { type: 'string', enum: ['income', 'expense', 'transfer'] }, category: { type: 'string' }, account: { type: 'string' }, limit: { type: 'integer', description: 'Most entries to return, default 60, at most 200' } } },
+    run(i) {
+      const q = String(i.query || '').toLowerCase(), ty = i.type ? aiType(i.type) : '', acc = i.account ? aiAccount(i.account) : '', cat = String(i.category || '').toLowerCase();
+      const hit = S.tx.filter(t => (!i.from || t.date >= i.from) && (!i.to || t.date <= i.to) && (!ty || t.type === ty) && (!acc || t.acc === acc || t.to === acc) && (!cat || (t.cat || '').toLowerCase() === cat)
+        && (!q || [t.note, t.cat, accName(t.acc)].join(' ').toLowerCase().includes(q))).sort((a, b) => b.date.localeCompare(a.date));
+      let inn = 0, out = 0; for (const t of hit) { if (t.type === 'in') inn += t.amount; else if (t.type === 'out') out += t.amount; }
+      return { count: hit.length, total_income: r2(inn), total_expense: r2(out), entries: hit.slice(0, Math.min(200, +i.limit || 60)).map(aiRow) };
+    } },
+  { name: 'add_transaction', description: 'Add one entry to the book. Returns the saved entry. Date defaults to today, account to the first account.',
+    schema: { type: 'object', properties: { type: { type: 'string', enum: ['income', 'expense', 'transfer'] }, amount: { type: 'number' }, date: { type: 'string', description: 'YYYY-MM-DD' }, category: { type: 'string' },
+      account: { type: 'string', description: 'Account name. For a transfer, the account the money leaves.' }, to_account: { type: 'string', description: 'Transfers only: the account the money goes to.' }, note: { type: 'string' } }, required: ['type', 'amount'] },
+    run(i) {
+      const type = aiType(i.type), amount = r2(Math.abs(+i.amount)); if (!(amount > 0)) throw new Error('Amount must be more than zero.');
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(i.date || '') ? i.date : today();
+      const t = { id: uid(), type, amount, date, acc: aiAccount(i.account, S.meta.accounts[0].id), note: String(i.note || '').slice(0, 120) };
+      if (type === 'transfer') { t.to = aiAccount(i.to_account); if (!t.to || t.to === t.acc) throw new Error('A transfer needs two different accounts.'); }
+      else { t.cat = String(i.category || '').trim() || guessCat(t.note, type); if (!S.meta.categories[type].includes(t.cat)) { S.meta.categories[type].push(t.cat); metaTouched = true; } }
+      putTx(t); if (metaTouched) persist([], true); return aiRow(t);
+    } },
+  { name: 'update_transaction', description: 'Change fields of one existing entry, found by its id from find_transactions. Only the fields you pass change. Returns the updated entry.',
+    schema: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string', enum: ['income', 'expense', 'transfer'] }, amount: { type: 'number' }, date: { type: 'string' }, category: { type: 'string' }, account: { type: 'string' }, to_account: { type: 'string' }, note: { type: 'string' } }, required: ['id'] },
+    run(i) {
+      const old = S.tx.find(t => t.id === String(i.id)); if (!old) throw new Error('No entry with that id.');
+      const t = Object.assign({}, old);
+      if (i.type) t.type = aiType(i.type); if (i.amount != null) t.amount = r2(Math.abs(+i.amount)); if (/^\d{4}-\d{2}-\d{2}$/.test(i.date || '')) t.date = i.date;
+      if (i.account) t.acc = aiAccount(i.account); if (i.note != null) t.note = String(i.note).slice(0, 120);
+      if (t.type === 'transfer') { if (i.to_account) t.to = aiAccount(i.to_account); if (!t.to || t.to === t.acc) throw new Error('A transfer needs two different accounts.'); delete t.cat; }
+      else { delete t.to; if (i.category) t.cat = String(i.category).trim(); if (!t.cat) t.cat = guessCat(t.note, t.type); if (!S.meta.categories[t.type].includes(t.cat)) { S.meta.categories[t.type].push(t.cat); metaTouched = true; } }
+      if (!(t.amount > 0)) throw new Error('Amount must be more than zero.');
+      putTx(t, old); if (metaTouched) persist([], true); return aiRow(t);
+    } },
+  { name: 'delete_transactions', description: 'Propose deleting entries by id. Nothing is deleted until the person presses Confirm under the chat. Returns how many entries are waiting for confirmation.',
+    schema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'string' } }, reason: { type: 'string', description: 'One short line shown to the person, e.g. "3 duplicate Swiggy entries"' } }, required: ['ids'] },
+    run(i) {
+      const ids = (Array.isArray(i.ids) ? i.ids : []).map(String).filter(id => S.tx.some(t => t.id === id)); if (!ids.length) throw new Error('None of those ids exist.');
+      AI.pendingDelete = { ids, reason: String(i.reason || '').slice(0, 140) };
+      return { waiting_for_confirmation: ids.length };
+    } },
+  { name: 'set_budget', description: 'Set the monthly budget for a spending category, or remove it with amount 0. Returns the budget now in force.',
+    schema: { type: 'object', properties: { category: { type: 'string' }, amount: { type: 'number' } }, required: ['category', 'amount'] },
+    run(i) {
+      const c = S.meta.categories.out.find(x => x.toLowerCase() === String(i.category || '').trim().toLowerCase()); if (!c) throw new Error('No spending category with that name. Categories: ' + S.meta.categories.out.join(', '));
+      const v = r2(+i.amount); if (v > 0) S.meta.budgets[c] = v; else delete S.meta.budgets[c];
+      saveMeta(); return { category: c, monthly_budget: v > 0 ? v : null };
+    } }];
+const aiRun = (name, input) => { const t = AI_TOOLS.find(x => x.name === name); if (!t) throw new Error('Unknown tool'); return t.run(input || {}); };
+const aiKey = () => LS.get(AI_KEY) || '';
+const aiMode = () => AI.sample ? 'claude' : aiKey() ? 'key' : AI.ready ? 'none' : 'wait';
+
+async function aiViaPage(question, onText, signal) {
+  const turns = [{ role: 'user', content: AI_RULES }];
+  for (const m of AI.chat.slice(0, -1).slice(-16)) if (m.text) turns.push({ role: m.role === 'you' ? 'user' : 'assistant', content: m.text });
+  turns.push({ role: 'user', content: `Book snapshot:\n${aiSnapshot()}\n\nMessage: ${question}` });
+  const { text } = await AI.sample(turns, { cache: false, signal, onText: ({ text }) => onText(text),
+    tools: AI_TOOLS.map(t => ({ name: t.name, description: t.description, inputSchema: t.schema, execute: input => t.run(input || {}) })) });
+  return text;
+}
+async function aiViaKey(question, onText, signal) {
+  AI.apiMsgs.push({ role: 'user', content: `Book snapshot:\n${aiSnapshot()}\n\nMessage: ${question}` });
+  let text = '';
+  for (let round = 0; round < 10; round++) {
+    const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', signal,
+      headers: { 'content-type': 'application/json', 'x-api-key': aiKey(), 'anthropic-version': '2026-10-21', 'anthropic-beta': 'server-side-fallback-2026-07-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: 'claude-opus-5-5', max_tokens: 16000, system: AI_RULES, messages: AI.apiMsgs, output_config: { effort: 'medium' }, fallbacks: 'default',
+        tools: AI_TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: t.schema })) }) });
+    if (!r.ok) { const body = await r.json().catch(() => ({})); throw { status: r.status, message: body && body.error && body.error.message }; }
+    const m = await r.json();
+    if (m.stop_reason === 'refusal') throw { code: 'refused' };
+    AI.apiMsgs.push({ role: 'assistant', content: m.content });
+    const said = m.content.filter(b => b.type === 'text').map(b => b.text).join('');
+    if (said) { text += (text ? '\n\n' : '') + said; onText(text); }
+    if (m.stop_reason !== 'tool_use') break;
+    AI.apiMsgs.push({ role: 'user', content: m.content.filter(b => b.type === 'tool_use').map(b => {
+      try { return { type: 'tool_result', tool_use_id: b.id, content: JSON.stringify(aiRun(b.name, b.input)) }; }
+      catch (e) { return { type: 'tool_result', tool_use_id: b.id, content: String(e && e.message || e), is_error: true }; } }) });
+  }
+  return text;
+}
+function aiErrorText(e) {
+  if (e && e.name === 'AbortError' || e && e.code === 'cancelled') return '';
+  if (e && e.code) return ({ not_granted: 'Claude was not allowed for this page. Reload and choose Allow to use it.', rate_limited: 'Too many questions at once. Wait a moment and ask again.', refused: 'Claude declined to answer that one.',
+    prompt_too_large: 'That conversation got too long. Start a new chat.' })[e.code] || `Claude could not answer (${e.code}). Try again.`;
+  if (e && e.status) return e.status === 401 ? 'That API key was not accepted. Remove it and enter it again.' : e.status === 429 ? 'The API key has hit its rate or spending limit. Wait a little, or check the limits in the Anthropic Console.'
+    : e.status >= 500 ? 'Claude is busy right now. Try again in a minute.' : `Claude could not answer: ${e.message || 'request rejected'}.`;
+  return 'Could not reach Claude. Check your internet connection and try again.';
+}
+async function aiAsk(question) {
+  question = String(question || '').trim(); if (!question || AI.busy) return;
+  const mode = aiMode(); if (mode !== 'claude' && mode !== 'key') return;
+  AI.chat.push({ role: 'you', text: question }, { role: 'claude', text: '' });
+  const reply = AI.chat[AI.chat.length - 1], n = AI.apiMsgs.length;
+  AI.busy = true; AI.err = ''; AI.ctl = new AbortController(); render(); aiScroll();
+  const onText = text => { reply.text = text; const el = document.querySelector('.chat .msg:last-child .txt'); if (el) { el.textContent = text; aiScroll(); } };
+  try { reply.text = (await (mode === 'claude' ? aiViaPage : aiViaKey)(question, onText, AI.ctl.signal)) || reply.text; }
+  catch (e) { AI.err = aiErrorText(e); if (e && e.text) reply.text = e.text; AI.apiMsgs.length = Math.min(AI.apiMsgs.length, n); }
+  if (!reply.text) AI.chat.pop();
+  AI.busy = false; render(); aiScroll();
+}
+function aiScroll() { const c = $('.chat'); if (c) c.scrollTop = c.scrollHeight; }
+function viewAssistant() {
+  const mode = aiMode();
+  if (mode === 'wait') return `<section class="panel"><p class="muted">Connecting to Claude…</p></section>`;
+  if (mode === 'none') return `<section class="panel sec"><h3>Connect Claude</h3>
+    <p>${NATIVE ? 'Inside the phone app, Claude runs on your own Anthropic API key.' : 'Open this page inside Claude to use it without a key, or use your own Anthropic API key here.'} Create a key in the Anthropic Console under API keys, then paste it below. Anthropic bills usage to that key. The key is stored only on this device.</p>
+    <form class="formrow" data-form="aiKey"><input type="password" id="ai-key" placeholder="sk-ant-…" autocomplete="off" aria-label="Anthropic API key"><button class="btn primary">Save key</button></form>
+    <p class="muted small" style="margin-top:10px">Asking a question sends your question, your totals and the entries Claude looks up to Anthropic.</p></section>`;
+  const ideas = ['Where did most of my money go this month?', 'Find entries that look like duplicates', 'Compare this month with last month', 'Set a ₹8,000 monthly budget for Groceries', 'How do I allow SMS access?'];
+  const msgs = AI.chat.map(m => `<div class="msg ${m.role}"><div class="who">${m.role === 'you' ? 'You' : 'Claude'}</div><div class="txt">${esc(m.text) || (AI.busy ? 'Thinking…' : '')}</div></div>`).join('');
+  const pd = AI.pendingDelete;
+  return `<section class="panel aipanel">
+    <div class="chat" aria-live="polite">${msgs || `<div class="empty">Ask about your money, tell Claude to add or fix entries, or ask how something in the app works.</div><div class="ideas">${ideas.map(q => `<button type="button" class="btn sm" data-act="aiIdea">${esc(q)}</button>`).join('')}</div>`}</div>
+    ${pd ? `<div class="banner"><p><b>Delete ${pd.ids.length} ${pd.ids.length === 1 ? 'entry' : 'entries'}?</b> ${esc(pd.reason)}</p><button type="button" class="btn sm" data-act="aiKeep">Keep them</button><button type="button" class="btn sm danger" data-act="aiDelete">Confirm delete</button></div>` : ''}
+    ${AI.err ? `<p class="err">${esc(AI.err)}</p>` : ''}
+    <form class="formrow askrow" data-form="aiAsk"><input type="text" id="ai-q" placeholder="Ask Claude…" autocomplete="off" aria-label="Message to Claude"${AI.busy ? ' disabled' : ''}>
+      ${AI.busy ? '<button type="button" class="btn" data-act="aiStop">Stop</button>' : '<button class="btn primary">Send</button>'}</form>
+    <div class="formrow" style="margin-top:8px">${AI.chat.length && !AI.busy ? '<button type="button" class="linkbtn small" data-act="aiNew">New chat</button>' : ''}${mode === 'key' ? '<button type="button" class="linkbtn small" data-act="aiForget">Remove API key</button>' : ''}
+      <span class="muted small">Your question, totals and the entries Claude looks up are sent to Anthropic.</span></div></section>`;
+}
+(async () => {
+  try { AI.sample = window.claude && window.claude.use ? await window.claude.use('sample') : null; } catch { AI.sample = null; }
+  AI.ready = true; if (S.tab === 'assistant') render();
+})();
+
 /* ---------- events ---------- */
 document.addEventListener('click', e => {
   const seg = e.target.closest('#f-type button'); if (seg) return setType(seg.dataset.type, null);
@@ -1085,6 +1267,16 @@ document.addEventListener('click', e => {
   else if (act === 'exportCsv') download(`cashbook-${today()}.csv`, toCsv());
   else if (act === 'exportJson') download(`cashbook-backup-${today()}.json`, JSON.stringify({ meta: S.meta, tx: S.tx }, null, 1));
   else if (act === 'import') $('#importFile').click();
+  else if (act === 'aiIdea') aiAsk(b.textContent);
+  else if (act === 'aiStop') { if (AI.ctl) AI.ctl.abort(); }
+  else if (act === 'aiNew') { AI.chat = []; AI.apiMsgs = []; AI.pendingDelete = null; AI.err = ''; render(); }
+  else if (act === 'aiForget') { try { localStorage.removeItem(AI_KEY); } catch {} AI.chat = []; AI.apiMsgs = []; render(); }
+  else if (act === 'aiKeep') { AI.pendingDelete = null; render(); }
+  else if (act === 'aiDelete') {
+    const ids = new Set(AI.pendingDelete.ids), gone = S.tx.filter(t => ids.has(t.id));
+    S.tx = S.tx.filter(t => !ids.has(t.id)); if (cloud.state === 'pending') gone.forEach(t => earlyOps.push({ del: t.id }));
+    persist(gone.map(t => ymOf(t.date))); AI.pendingDelete = null; render(); toast(`Deleted ${gone.length} ${gone.length === 1 ? 'entry' : 'entries'}`);
+  }
   else if (act === 'gmail') fetchGmail(+$('#gm-days').value);
   else if (act === 'sms') readSms();
   else if (act === 'smsAllow') { LS.set(SMS_ASKED, '1'); NATIVE.requestSmsPermission(); }
@@ -1102,6 +1294,12 @@ document.addEventListener('click', e => {
   }
 });
 document.addEventListener('submit', e => {
+  const af = e.target.closest('[data-form="aiAsk"], [data-form="aiKey"]');
+  if (af) {
+    e.preventDefault();
+    if (af.dataset.form === 'aiKey') { const k = $('#ai-key').value.trim(); if (!/^sk-ant-/.test(k)) return toast('That does not look like an Anthropic API key. It starts with sk-ant-'); LS.set(AI_KEY, k); return render(); }
+    const q = $('#ai-q').value; $('#ai-q').value = ''; return aiAsk(q);
+  }
   const f = e.target.closest('[data-form="addCat"]'); if (!f) return;
   e.preventDefault();
   const kind = f.dataset.kind, inp = f.querySelector('input'), name = inp.value.trim();
@@ -1138,7 +1336,7 @@ new ResizeObserver(() => { const el = $('#flow'); if (el && Math.abs(el.clientWi
 
 /* ---------- start ---------- */
 loadLocal();
-const savedTab = LS.get('cashbook.tab'); if (['overview', 'transactions', 'accounts', 'import', 'setup'].includes(savedTab)) S.tab = savedTab;
+const savedTab = LS.get('cashbook.tab'); if (['overview', 'transactions', 'accounts', 'import', 'assistant', 'setup'].includes(savedTab)) S.tab = savedTab;
 render();
 initCloud();
 if (NATIVE) {

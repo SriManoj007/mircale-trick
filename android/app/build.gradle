@@ -7,7 +7,7 @@ tasks.register('copyWeb', Copy) { from '../../index.html'; into webAssets }
 android {
     namespace 'app.cashbook'
     compileSdk 34
-    defaultConfig { applicationId 'app.cashbook'; minSdk 26; targetSdk 34; versionCode 1; versionName '1.0' }
+    defaultConfig { applicationId 'app.cashbook'; minSdk 26; targetSdk 34; versionCode 2; versionName '1.1' }
     signingConfigs {
         // Fixed personal key so every build can update the installed app without losing its data.
         personal { storeFile file('../cashbook.keystore'); storePassword 'cashbook'; keyAlias 'cashbook'; keyPassword 'cashbook' }
