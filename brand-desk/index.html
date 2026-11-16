@@ -126,10 +126,23 @@ h2{font:700 18px/1.2 var(--display);font-stretch:110%;text-wrap:balance}
 .projects{display:flex;flex-direction:column}
 .proj{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1.2fr) auto;gap:8px 20px;align-items:center;padding:14px 4px;border-bottom:1px solid var(--line)}
 .proj h3{font:600 16px/1.25 var(--body);overflow-wrap:anywhere}
-.proj .stack{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--sunk)}
-.proj .stack i{display:block}
-.proj .stack .s-brief{background:var(--line)} .proj .stack .s-progress{background:var(--muted)}
-.proj .stack .s-review{background:var(--warn)} .proj .stack .s-done{background:var(--accent)}
+.stack{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--sunk)}
+.stack i{display:block}
+.stack .s-brief{background:var(--line)} .stack .s-progress{background:var(--muted)}
+.stack .s-review{background:var(--warn)} .stack .s-done{background:var(--accent)}
+
+/* dashboard */
+.dash{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:28px 36px;align-items:start}
+.panel{display:flex;flex-direction:column;gap:10px;min-width:0}
+.panel.wide{grid-column:1/-1}
+.panel>header{border-bottom:1px solid var(--line);padding-bottom:4px}
+.bars{display:grid;grid-template-columns:minmax(0,38%) minmax(0,1fr) auto;gap:9px 12px;align-items:center}
+.bars .bl{min-width:0;overflow-wrap:anywhere}
+.bars .track{height:10px;background:var(--sunk);border-radius:5px;overflow:hidden}
+.bars .track i{display:block;height:100%;background:var(--accent);border-radius:5px}
+.bars .n{font:500 13px var(--mono);font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}
+.bars .n b{color:var(--ink);font-weight:500}
+.bars .n .late{color:var(--crit)}
 
 /* dialog */
 dialog{border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);padding:0;width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 40px)}
@@ -149,6 +162,7 @@ textarea{resize:vertical;min-height:74px}
 
 @media (max-width:820px){
   .today{grid-template-columns:minmax(0,1fr)}
+  .dash{grid-template-columns:minmax(0,1fr)}
   .board{grid-template-columns:minmax(0,1fr)}
   .week{grid-template-columns:minmax(0,1fr)}
   .day{min-height:0}
@@ -163,7 +177,7 @@ textarea{resize:vertical;min-height:74px}
   <header class="top">
     <div class="mark"><b>Stone &amp; Acres</b><span>Brand Desk</span></div>
     <nav aria-label="Views">
-      <a href="#today">Today</a><a href="#board">Board</a><a href="#week">Week</a><a href="#projects">Projects</a>
+      <a href="#dashboard">Dashboard</a><a href="#today">Today</a><a href="#board">Board</a><a href="#week">Week</a><a href="#projects">Projects</a>
     </nav>
     <button class="btn primary w" id="new-task" type="button">New task</button>
   </header>
@@ -178,6 +192,15 @@ textarea{resize:vertical;min-height:74px}
     <select id="flt-project" aria-label="Project"><option value="">All projects</option></select>
     <span class="note" id="status">Loading the board…</span>
   </div>
+
+  <!-- DASHBOARD -->
+  <section id="v-dashboard" class="col" hidden>
+    <div>
+      <p class="label">Whole department</p>
+      <div class="tally" id="dash-tally"></div>
+    </div>
+    <div class="dash" id="dash"></div>
+  </section>
 
   <!-- TODAY -->
   <section id="v-today" class="today" hidden>
@@ -292,6 +315,7 @@ const STAGE = Object.fromEntries(STAGES);
 const TYPES = ["Identity","Print","Signage","Social","Web","Photo & video","Copy","Other"];
 const STARTERS = ["Check the brand inbox for new requests","Move your tasks to the right stage","Reply to feedback on work in review","File approved artwork in the shared drive"];
 const PRI = {high:0, normal:1, low:2};
+const VIEWS = ["dashboard","today","board","week","projects"];
 const $ = s => document.querySelector(s);
 
 function h(tag, attrs, ...kids){
@@ -366,10 +390,10 @@ function setStage(t, status){ return patchDoc("tasks", t.id, {status, doneAt: st
 /* ---------- render ---------- */
 let projSig = "";
 function render(){
-  const view = ["today","board","week","projects"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "today";
-  for (const v of ["today","board","week","projects"]) $("#v-"+v).hidden = v !== view;
+  const view = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "today";
+  for (const v of VIEWS) $("#v-"+v).hidden = v !== view;
   document.querySelectorAll("nav a").forEach(a => a.getAttribute("href") === "#"+view ? a.setAttribute("aria-current","page") : a.removeAttribute("aria-current"));
-  $("#filters").hidden = view === "projects";
+  $("#filters").hidden = view === "projects" || view === "dashboard";
 
   const live = S.projects.filter(p => !p.archived).sort((a,b) => a.name.localeCompare(b.name));
   const sig = live.map(p => p.id+p.name).join("|");
@@ -381,7 +405,7 @@ function render(){
   $("#flt-all").setAttribute("aria-pressed", String(!prefs.mine));
   $("#flt-mine").disabled = !me.id;
 
-  ({today:renderToday, board:renderBoard, week:renderWeek, projects:renderProjects})[view]();
+  ({dashboard:renderDashboard, today:renderToday, board:renderBoard, week:renderWeek, projects:renderProjects})[view]();
   resolveNames();
 }
 
@@ -391,6 +415,49 @@ function row(t){
     h("span",{class:"t"}, t.title),
     dueEl(t),
     h("span",{class:"sub"}, [projName(t.projectId), t.type, t.assignee ? nameOf(t.assignee) : "Unassigned", t.priority === "high" ? "Urgent" : null].filter(Boolean).join(" · ")));
+}
+function bars(items){
+  const max = Math.max(1, ...items.map(i => i[1]));
+  return h("div",{class:"bars"}, items.flatMap(([label, v, late]) => [
+    h("span",{class:"bl"},label),
+    h("div",{class:"track"},h("i",{style:"width:"+(100*v/max)+"%"})),
+    h("span",{class:"n"},h("b",null,String(v)), late ? h("span",{class:"late"}," · "+late+" overdue") : null)]));
+}
+function panel(title, body, wide){ return h("div",{class:"panel"+(wide?" wide":"")}, h("header",null,h("h2",null,title)), body); }
+function renderDashboard(){
+  const all = S.tasks, open = all.filter(t => t.status !== "done");
+  const isLate = t => t.due && t.due < TODAY;
+  const overdue = open.filter(isLate), weekAgo = addDays(new Date(), -7).toISOString();
+  const approved = all.filter(t => t.status === "done" && t.doneAt && t.doneAt >= weekAgo);
+  $("#dash-tally").replaceChildren(
+    h("span",null,h("b",null,String(open.length)),"open"),
+    h("span",{class:open.some(t => t.due === TODAY)?"warn":""},h("b",null,String(open.filter(t => t.due === TODAY).length)),"due today"),
+    h("span",{class:overdue.length?"crit":""},h("b",null,String(overdue.length)),"overdue"),
+    h("span",null,h("b",null,String(open.filter(t => t.status === "review").length)),"in review"),
+    h("span",null,h("b",null,String(approved.length)),"approved in the last 7 days"),
+    h("span",null,h("b",null,String(S.projects.filter(p => !p.archived).length)),"live projects"));
+  if (!all.length) { $("#dash").replaceChildren(h("p",{class:"empty panel wide"},"No tasks yet. The dashboard fills in as the team adds tasks on Today or the Board.")); return; }
+
+  const people = new Map();
+  for (const t of open) { const k = t.assignee || "", e = people.get(k) || {n:0, late:0}; e.n++; if (isLate(t)) e.late++; people.set(k, e); }
+  const load = [...people].sort((a,b) => b[1].n - a[1].n).map(([id,e]) => [who(id || null), e.n, e.late]);
+  const types = TYPES.map(x => [x, open.filter(t => t.type === x).length, open.filter(t => t.type === x && isLate(t)).length]).filter(r => r[1]).sort((a,b) => b[1]-a[1]);
+  const live = S.projects.filter(p => !p.archived).sort((a,b) => (a.due||"9999").localeCompare(b.due||"9999") || a.name.localeCompare(b.name));
+  const horizon = key(addDays(new Date(), 14));
+  const dated = open.filter(t => t.due && t.due <= horizon).sort((a,b) => a.due.localeCompare(b.due) || byUrgency(a,b));
+  const none = text => h("p",{class:"empty"},text);
+
+  $("#dash").replaceChildren(
+    panel("Tasks by stage", bars(STAGES.map(([id,label]) => [label, all.filter(t => t.status === id).length, id === "done" ? 0 : all.filter(t => t.status === id && isLate(t)).length]))),
+    panel("Open work by person", load.length ? bars(load) : none("No open tasks.")),
+    panel("Open work by type", types.length ? bars(types) : none("No open tasks.")),
+    panel("Projects", live.length ? h("div",{class:"bars"}, live.flatMap(p => {
+      const ts = all.filter(t => t.projectId === p.id), n = ts.length || 1, done = ts.filter(t => t.status === "done").length;
+      return [h("span",{class:"bl"},p.name),
+        h("div",{class:"stack",role:"img","aria-label":done+" of "+ts.length+" tasks approved"}, STAGES.map(([id]) => h("i",{class:"s-"+id,style:"width:"+(100*ts.filter(t => t.status === id).length/n)+"%"}))),
+        h("span",{class:"n"},h("b",null,done+"/"+ts.length), p.due ? h("span",{class:p.due < TODAY && done < ts.length ? "late" : ""}," · "+fmtDay(p.due)) : null)];
+    })) : none("No projects yet.")),
+    panel("Overdue and due in the next 14 days", dated.length ? h("div",{class:"rows"},dated.map(row)) : none("Nothing overdue and nothing due in the next two weeks."), true));
 }
 function renderToday(){
   $("#today-date").textContent = new Date().toLocaleDateString(undefined,{weekday:"long",day:"numeric",month:"long",year:"numeric"});
